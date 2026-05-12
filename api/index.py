@@ -127,7 +127,7 @@ async def rag_query_pdf_ai(ctx: inngest.Context):
 app = FastAPI()
 
 # Direct query endpoint for Streamlit to call
-@app.post("/query")
+@app.post("/api/query")
 async def query_endpoint(data: dict):
     question = data.get("question")
     top_k = int(data.get("top_k", 5))
