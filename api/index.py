@@ -31,9 +31,28 @@ inngest_client = inngest.Inngest(
 )
 async def rag_ingest_pdf(ctx: inngest.Context):
     def _load(ctx: inngest.Context) -> RAGChunkAndSrc:
-        pdf_path = ctx.event.data["pdf_path"]
-        source_id = ctx.event.data.get("source_id", pdf_path)
-        chunks = load_and_chunk_pdf(pdf_path)
+        import base64
+        import tempfile
+        
+        pdf_base64 = ctx.event.data["pdf_base64"]
+        file_name = ctx.event.data.get("file_name", "temp.pdf")
+        source_id = ctx.event.data.get("source_id", file_name)
+        
+        # Decode and save to a temporary file
+        pdf_bytes = base64.b64decode(pdf_base64)
+        
+        # /tmp is the only writable directory on Vercel
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            tmp.write(pdf_bytes)
+            tmp_path = tmp.name
+            
+        try:
+            chunks = load_and_chunk_pdf(tmp_path)
+        finally:
+            # Clean up the temp file
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+                
         return RAGChunkAndSrc(chunks=chunks, source_id=source_id)
 
     def _upsert(chunks_and_src: RAGChunkAndSrc) -> RAGUpsertResult:
@@ -106,6 +125,44 @@ async def rag_query_pdf_ai(ctx: inngest.Context):
     ).model_dump()
 
 app = FastAPI()
+
+# Direct query endpoint for Streamlit to call
+@app.post("/query")
+async def query_endpoint(data: dict):
+    question = data.get("question")
+    top_k = int(data.get("top_k", 5))
+    
+    # We reuse the logic from the Inngest function
+    # Search
+    query_vec = embed_texts([question])[0]
+    store = QdrantStorage()
+    found = store.search(query_vec, top_k)
+    
+    # LLM Answer
+    context_block = "\n\n".join(f"- {c}" for c in found["contexts"])
+    user_content = (
+        "Use the following context to answer the question.\n\n"
+        f"Context: \n{context_block}\n\n"
+        f"Question: {question}\n"
+        "Answer concisely using the context above."
+    )
+    
+    groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+    response = groq_client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[
+            {"role": "system", "content": "You answer questions using only the provided context."},
+            {"role": "user", "content": user_content}
+        ],
+        max_tokens=1024,
+        temperature=0.2
+    )
+    answer = response.choices[0].message.content.strip()
+    
+    return {
+        "answer": answer,
+        "sources": found["sources"]
+    }
 
 # Vercel handles the base path, but we serve Inngest at /api/inngest
 inngest.fast_api.serve(app, inngest_client, [rag_ingest_pdf, rag_query_pdf_ai])
