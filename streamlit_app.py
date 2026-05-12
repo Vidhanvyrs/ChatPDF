@@ -15,7 +15,11 @@ st.set_page_config(page_title="RAG Ingest PDF", page_icon="📄", layout="center
 
 @st.cache_resource
 def get_inngest_client() -> inngest.Inngest:
-    is_prod = os.getenv("VERCEL_ENV") is not None or os.getenv("INNGEST_API_BASE") is not None
+    # If we have an event key or are on Vercel, use production mode (Inngest Cloud)
+    is_prod = (
+        os.getenv("INNGEST_EVENT_KEY") is not None or 
+        os.getenv("VERCEL_ENV") is not None
+    )
     return inngest.Inngest(app_id="rag_app", is_production=is_prod)
 
 
